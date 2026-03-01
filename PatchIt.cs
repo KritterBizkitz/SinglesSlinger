@@ -586,8 +586,8 @@ namespace SinglesSlinger
                             placedCards++;
                             yield return null;
 
-                            if (Plugin.TryTriggerAutoSetPricesMod.Value)
-                                TryTellAutoSetPrices(cardCompart);
+                            if (Plugin.TryTriggerPriceSlinger.Value)
+                                TryTellPriceSlinger(cardCompart);
 
                             yield return null;
                         }
@@ -716,8 +716,8 @@ namespace SinglesSlinger
                             placedCards++;
                             yield return null;
 
-                            if (Plugin.TryTriggerAutoSetPricesMod.Value)
-                                TryTellAutoSetPrices(cardCompart);
+                            if (Plugin.TryTriggerPriceSlinger.Value)
+                                TryTellPriceSlinger(cardCompart);
 
                             yield return null;
                         }
@@ -818,22 +818,25 @@ namespace SinglesSlinger
             }
         }
 
-        private static void TryTellAutoSetPrices(InteractableCardCompartment cardCompart)
+        /// <summary>
+        /// If PriceSlinger is installed, ask it to price the compartment we just placed a card into.
+        /// Uses reflection so SinglesSlinger has no hard dependency on PriceSlinger.
+        /// </summary>
+        private static void TryTellPriceSlinger(InteractableCardCompartment cardCompart)
         {
             try
             {
-                var t = AccessTools.TypeByName("AutoSetPrices.AllPatchs");
+                var t = AccessTools.TypeByName("PriceSlinger.Pricer");
                 if (t == null) return;
 
-                var m = AccessTools.Method(t, "CardCompartOnMouseButtonUpPostfix");
+                var m = AccessTools.Method(t, "PriceCompartment");
                 if (m == null) return;
 
-                object[] args = new object[] { cardCompart };
-                m.Invoke(null, args);
+                m.Invoke(null, new object[] { cardCompart });
             }
             catch (Exception ex)
             {
-                LogErrorThrottled("AutoSetPricesHookFailed", "AutoSetPrices hook failed:\r\n" + ex, 15f);
+                LogErrorThrottled("PriceSlingerHookFailed", "PriceSlinger hook failed:\r\n" + ex, 15f);
             }
         }
 

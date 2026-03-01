@@ -8,7 +8,7 @@ using System.Collections.Generic;
 
 namespace SinglesSlinger
 {
-    [BepInPlugin("com.kritterbizkit.singlesslinger", "SinglesSlinger", "1.9.0")]
+    [BepInPlugin("com.kritterbizkit.singlesslinger", "SinglesSlinger", "1.9.1")]
     public class Plugin : BaseUnityPlugin
     {
         internal static Dictionary<ECardExpansionType, ConfigEntry<bool>> EnabledExpansions;
@@ -31,7 +31,7 @@ namespace SinglesSlinger
         internal static ConfigEntry<bool> GradedTriggerOnCustomerCardPickup;
         internal static ConfigEntry<bool> GradedTriggerOnDayStart;
 
-        internal static ConfigEntry<bool> TryTriggerAutoSetPricesMod;
+        internal static ConfigEntry<bool> TryTriggerPriceSlinger;
         internal static ConfigEntry<KeyboardShortcut> SetOutGradedCardsKey;
         internal static ConfigEntry<bool> GradedOnlyToVintageTable;
 
@@ -156,8 +156,8 @@ namespace SinglesSlinger
             GradedTriggerOnDayStart = Config.Bind("Triggers", "GradedShouldTriggerOnDayStart", false,
                 "Automatically fill shelves with graded cards when the day begins?");
 
-            TryTriggerAutoSetPricesMod = Config.Bind("Mod_Integration", "ShouldTriggerAutoSetPricesMod", true,
-                "If Auto Set Prices mod is installed, ask it to set the price of cards placed on shelves.");
+            TryTriggerPriceSlinger = Config.Bind("Mod_Integration", "ShouldTriggerPriceSlinger", true,
+                "If PriceSlinger mod is installed, ask it to set the price of cards placed on shelves.");
 
             SkipVintageTables = Config.Bind(
                 "Placement",
