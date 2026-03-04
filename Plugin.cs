@@ -18,7 +18,7 @@ namespace SinglesSlinger
     {
         private const string PluginGuid = "com.kritterbizkit.singlesslinger";
         private const string PluginName = "SinglesSlinger";
-        private const string PluginVersion = "1.9.3";
+        private const string PluginVersion = "1.9.4";
 
         /// <summary>Shared logger accessible from all mod files.</summary>
         internal static ManualLogSource Log;
@@ -62,6 +62,7 @@ namespace SinglesSlinger
 
         // ───────────── Performance ─────────────
         internal static ConfigEntry<int> CardBatchSize;
+        internal static ConfigEntry<float> RefillDebounceDelay;
 
         // ───────────── Debug ─────────────
         internal static ConfigEntry<bool> DebugLogging;
@@ -188,6 +189,13 @@ namespace SinglesSlinger
                 "Performance", "CardBatchSize", 20,
                 "Number of cards to process per frame during scan/placement. " +
                 "Higher = faster but may cause frame drops on slower hardware.");
+
+            RefillDebounceDelay = Config.Bind(
+                "Performance", "RefillDebounceDelay", 2f,
+                "Seconds to wait after the last customer card pickup before triggering " +
+                "an automatic shelf refill. Batches multiple rapid pickups into a single " +
+                "pipeline run. Only applies to the customer-pickup trigger — hotkeys and " +
+                "day-start are always immediate. Set to 0 for no debounce.");
 
             // ── Debug ──
             DebugLogging = Config.Bind(

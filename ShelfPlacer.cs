@@ -11,6 +11,10 @@ namespace SinglesSlinger
     /// Orchestrates card placement onto shelves using a three-phase pipeline:
     /// SCAN (gather eligible cards) → ASSIGN (map cards to compartments) →
     /// SPAWN (create 3D objects in batches). Supports both ungraded and graded cards.
+    ///
+    /// Event-driven triggers (customer pickup) use a debounce pattern: rapid
+    /// events are collapsed into a single pipeline run after activity settles.
+    /// Hotkeys and day-start triggers execute immediately.
     /// </summary>
     internal static class ShelfPlacer
     {
@@ -24,14 +28,79 @@ namespace SinglesSlinger
         private static bool isRunningNormal;
         private static bool isRunningGraded;
 
+        // ── Debounce state ──────────────────────────────────────────────
+        private static bool _normalRefillRequested;
+        private static bool _gradedRefillRequested;
+        private static float _normalRequestTime;
+        private static float _gradedRequestTime;
+
         /// <summary>
-        /// Entry point for placing cards. Starts the appropriate yielding pipeline.
-        /// Normal and graded runs use separate guards and may run concurrently.
+        /// Marks that a refill is needed for the given mode. The actual pipeline
+        /// will not start until the debounce delay elapses with no new requests.
+        /// Each call resets the debounce timer so that bursts of rapid events
+        /// collapse into one pipeline run.
+        /// </summary>
+        internal static void RequestRefill(RunMode mode)
+        {
+            float now = Time.realtimeSinceStartup;
+
+            if (mode == RunMode.NormalSingles)
+            {
+                _normalRefillRequested = true;
+                _normalRequestTime = now;
+                LogHelper.LogDebug(
+                    "[SinglesSlinger] Normal refill requested (debounce started/reset).");
+            }
+            else
+            {
+                _gradedRefillRequested = true;
+                _gradedRequestTime = now;
+                LogHelper.LogDebug(
+                    "[SinglesSlinger] Graded refill requested (debounce started/reset).");
+            }
+        }
+
+        /// <summary>
+        /// Called every frame from the Update patch. Checks whether any debounced
+        /// refill requests have settled and starts the pipeline if so.
+        /// Cost: two boolean checks + two float comparisons — nanoseconds.
+        /// </summary>
+        internal static void ProcessPendingRefills()
+        {
+            float now = Time.realtimeSinceStartup;
+            float delay = Plugin.RefillDebounceDelay != null
+                ? Plugin.RefillDebounceDelay.Value
+                : 2f;
+
+            if (_normalRefillRequested && !isRunningNormal &&
+                (now - _normalRequestTime) >= delay)
+            {
+                _normalRefillRequested = false;
+                LogHelper.LogDebug(
+                    "[SinglesSlinger] Normal debounce elapsed — starting pipeline.");
+                DoShelfPut(RunMode.NormalSingles);
+            }
+
+            if (_gradedRefillRequested && !isRunningGraded &&
+                (now - _gradedRequestTime) >= delay)
+            {
+                _gradedRefillRequested = false;
+                LogHelper.LogDebug(
+                    "[SinglesSlinger] Graded debounce elapsed — starting pipeline.");
+                DoShelfPut(RunMode.GradedCards);
+            }
+        }
+
+        /// <summary>
+        /// Immediately starts the placement pipeline for the given mode.
+        /// Clears any pending debounce request for the same mode.
         /// </summary>
         internal static void DoShelfPut(RunMode mode)
         {
             if (mode == RunMode.NormalSingles)
             {
+                _normalRefillRequested = false;
+
                 if (isRunningNormal) return;
                 isRunningNormal = true;
                 try
@@ -40,12 +109,15 @@ namespace SinglesSlinger
                 }
                 catch (Exception ex)
                 {
-                    Plugin.Log.LogError("[SinglesSlinger] DoShelfPut (normal) failed:\r\n" + ex);
+                    Plugin.Log.LogError(
+                        "[SinglesSlinger] DoShelfPut (normal) failed:\r\n" + ex);
                     isRunningNormal = false;
                 }
             }
             else
             {
+                _gradedRefillRequested = false;
+
                 if (isRunningGraded) return;
                 isRunningGraded = true;
                 try
@@ -54,7 +126,8 @@ namespace SinglesSlinger
                 }
                 catch (Exception ex)
                 {
-                    Plugin.Log.LogError("[SinglesSlinger] DoShelfPut (graded) failed:\r\n" + ex);
+                    Plugin.Log.LogError(
+                        "[SinglesSlinger] DoShelfPut (graded) failed:\r\n" + ex);
                     isRunningGraded = false;
                 }
             }
@@ -101,7 +174,8 @@ namespace SinglesSlinger
                 }
 
                 if (Plugin.EnabledExpansions.TryGetValue(
-                        ECardExpansionType.Ghost, out var ghostEnabled) && ghostEnabled.Value)
+                        ECardExpansionType.Ghost, out var ghostEnabled) &&
+                    ghostEnabled.Value)
                 {
                     yield return StaticCoroutine.Start(
                         CardCollector.ScanExpansionYielding(
@@ -114,7 +188,8 @@ namespace SinglesSlinger
             if (allCards.Count == 0)
             {
                 isRunningNormal = false;
-                ShelfUtility.ShowPopup("SinglesSlinger: No cards matching configured filters!");
+                ShelfUtility.ShowPopup(
+                    "SinglesSlinger: No cards matching configured filters!");
                 yield break;
             }
 
@@ -155,16 +230,20 @@ namespace SinglesSlinger
             var assignCards = new List<CardData>();
             int mostExpensiveIndex = 0;
 
-            List<CardShelf> shelves = CSingleton<ShelfManager>.Instance.m_CardShelfList;
+            List<CardShelf> shelves =
+                CSingleton<ShelfManager>.Instance.m_CardShelfList;
 
             foreach (CardShelf shelf in shelves)
             {
                 if (shelf == null) continue;
                 if (allCards.Count == 0) break;
-                if (Plugin.SkipVintageTables.Value && ShelfUtility.IsVintageTable(shelf)) continue;
+                if (Plugin.SkipVintageTables.Value &&
+                    ShelfUtility.IsVintageTable(shelf))
+                    continue;
                 if (shelf.GetIsBoxedUp()) continue;
 
-                List<InteractableCardCompartment> compartments = shelf.GetCardCompartmentList();
+                List<InteractableCardCompartment> compartments =
+                    shelf.GetCardCompartmentList();
                 if (compartments == null) continue;
 
                 for (int i = 0; i < compartments.Count; i++)
@@ -173,7 +252,8 @@ namespace SinglesSlinger
 
                     InteractableCardCompartment cc = compartments[i];
                     if (cc == null) continue;
-                    if (cc.m_StoredCardList.Count != 0 || cc.m_ItemNotForSale) continue;
+                    if (cc.m_StoredCardList.Count != 0 || cc.m_ItemNotForSale)
+                        continue;
 
                     CardData cardData = null;
                     int selectedIdx = -1;
@@ -196,7 +276,8 @@ namespace SinglesSlinger
                         }
                     }
 
-                    if (cardData == null || cardData.monsterType == EMonsterType.None)
+                    if (cardData == null ||
+                        cardData.monsterType == EMonsterType.None)
                         continue;
 
                     assignCompartments.Add(cc);
@@ -236,7 +317,8 @@ namespace SinglesSlinger
             {
                 try
                 {
-                    ShelfUtility.PlaceCardDirect(assignCompartments[i], assignCards[i]);
+                    ShelfUtility.PlaceCardDirect(
+                        assignCompartments[i], assignCards[i]);
                     placedCards++;
 
                     if (Plugin.TryTriggerPriceSlinger.Value)
@@ -244,12 +326,11 @@ namespace SinglesSlinger
                 }
                 catch (Exception ex)
                 {
-                    // Restore the card to inventory on placement failure
                     try { CPlayerData.AddCard(assignCards[i], 1); } catch { }
 
                     LogHelper.LogErrorThrottled("BatchPlace",
-                        "[SinglesSlinger] PlaceCardDirect failed at index " + i +
-                        ": " + ex, 5f);
+                        "[SinglesSlinger] PlaceCardDirect failed at index " +
+                        i + ": " + ex, 5f);
                 }
 
                 if ((i + 1) % batchSize == 0)
@@ -270,10 +351,12 @@ namespace SinglesSlinger
         // ═══════════════════════════════════════════════════════════════
         private static IEnumerator RunGradedPipeline()
         {
-            int batchSize = Plugin.CardBatchSize != null ? Plugin.CardBatchSize.Value : 20;
+            int batchSize = Plugin.CardBatchSize != null
+                ? Plugin.CardBatchSize.Value : 20;
             bool requireVintage = Plugin.GradedOnlyToVintageTable.Value;
 
-            List<CardShelf> shelves = CSingleton<ShelfManager>.Instance.m_CardShelfList;
+            List<CardShelf> shelves =
+                CSingleton<ShelfManager>.Instance.m_CardShelfList;
 
             // Check for vintage tables first if required
             if (requireVintage)
@@ -281,7 +364,8 @@ namespace SinglesSlinger
                 bool anyVintage = false;
                 for (int s = 0; s < shelves.Count; s++)
                 {
-                    if (shelves[s] != null && ShelfUtility.IsVintageTable(shelves[s]))
+                    if (shelves[s] != null &&
+                        ShelfUtility.IsVintageTable(shelves[s]))
                     {
                         anyVintage = true;
                         break;
@@ -292,7 +376,8 @@ namespace SinglesSlinger
                 {
                     isRunningGraded = false;
                     ShelfUtility.ShowPopup(
-                        "SinglesSlinger: No vintage tables found, graded cards were not placed.");
+                        "SinglesSlinger: No vintage tables found, " +
+                        "graded cards were not placed.");
                     yield break;
                 }
             }
@@ -317,29 +402,32 @@ namespace SinglesSlinger
             // ── PHASE 2: ASSIGN ────────────────────────────────────────
             var assignCompartments = new List<InteractableCardCompartment>();
             var assignCards = new List<CardData>();
+            int resultIndex = 0;
 
             foreach (CardShelf shelf in shelves)
             {
                 if (shelf == null) continue;
-                if (results.Count == 0) break;
+                if (resultIndex >= results.Count) break;
 
                 bool isVintage = ShelfUtility.IsVintageTable(shelf);
                 if (requireVintage && !isVintage) continue;
                 if (shelf.GetIsBoxedUp()) continue;
 
-                List<InteractableCardCompartment> compartments = shelf.GetCardCompartmentList();
+                List<InteractableCardCompartment> compartments =
+                    shelf.GetCardCompartmentList();
                 if (compartments == null) continue;
 
                 for (int i = 0; i < compartments.Count; i++)
                 {
-                    if (results.Count == 0) break;
+                    if (resultIndex >= results.Count) break;
 
                     InteractableCardCompartment cc = compartments[i];
                     if (cc == null) continue;
-                    if (cc.m_StoredCardList.Count != 0 || cc.m_ItemNotForSale) continue;
+                    if (cc.m_StoredCardList.Count != 0 || cc.m_ItemNotForSale)
+                        continue;
 
-                    CardData cardData = results[0];
-                    results.RemoveAt(0);
+                    CardData cardData = results[resultIndex];
+                    resultIndex++;
 
                     if (cardData == null ||
                         cardData.monsterType == EMonsterType.None ||
@@ -353,8 +441,8 @@ namespace SinglesSlinger
                     if (!TryRemoveGradedCardFromAlbum(cardData))
                     {
                         LogHelper.LogWarningThrottled("Graded.RemoveFailed",
-                            "[SinglesSlinger] Failed removing a graded card from album inventory.",
-                            10f);
+                            "[SinglesSlinger] Failed removing a graded card " +
+                            "from album inventory.", 10f);
                     }
 
                     if (assignCompartments.Count % batchSize == 0)
@@ -371,7 +459,8 @@ namespace SinglesSlinger
             {
                 try
                 {
-                    ShelfUtility.PlaceCardDirect(assignCompartments[i], assignCards[i]);
+                    ShelfUtility.PlaceCardDirect(
+                        assignCompartments[i], assignCards[i]);
                     placedCards++;
 
                     if (Plugin.TryTriggerPriceSlinger.Value)
@@ -380,8 +469,8 @@ namespace SinglesSlinger
                 catch (Exception ex)
                 {
                     LogHelper.LogErrorThrottled("BatchPlaceGraded",
-                        "[SinglesSlinger] PlaceCardDirect (graded) failed at index " +
-                        i + ": " + ex, 5f);
+                        "[SinglesSlinger] PlaceCardDirect (graded) failed at " +
+                        "index " + i + ": " + ex, 5f);
                 }
 
                 if ((i + 1) % batchSize == 0)
@@ -391,17 +480,19 @@ namespace SinglesSlinger
             isRunningGraded = false;
             BinderOverhaulBridge.NotifyBatchComplete();
 
-            ShelfUtility.ShowPopup(placedCards + " graded cards of " + totalMatching +
-                " possible matching graded cards placed.");
+            ShelfUtility.ShowPopup(placedCards + " graded cards of " +
+                totalMatching + " possible matching graded cards placed.");
         }
 
         // ═══════════════════════════════════════════════════════════════
-        //  Graded inventory removal
+        //  Graded inventory removal (uses cached FieldInfo)
         // ═══════════════════════════════════════════════════════════════
 
         /// <summary>
-        /// Removes a single graded card entry from CPlayerData.m_GradedCardInventoryList
-        /// by matching the gradedCardIndex. Uses reflection since the field may be private.
+        /// Removes a single graded card entry from
+        /// CPlayerData.m_GradedCardInventoryList by matching the
+        /// gradedCardIndex. Uses the shared cached FieldInfo from
+        /// <see cref="ShelfUtility.GetGradedListField"/>.
         /// </summary>
         private static bool TryRemoveGradedCardFromAlbum(CardData placed)
         {
@@ -409,8 +500,7 @@ namespace SinglesSlinger
             {
                 if (placed == null) return false;
 
-                FieldInfo listField = AccessTools.Field(
-                    typeof(CPlayerData), "m_GradedCardInventoryList");
+                FieldInfo listField = ShelfUtility.GetGradedListField();
                 if (listField == null) return false;
 
                 object rawListObj = listField.GetValue(null);

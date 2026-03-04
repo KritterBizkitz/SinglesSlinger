@@ -16,6 +16,51 @@ namespace SinglesSlinger
         /// <summary>Shared RNG for shuffling and random card selection.</summary>
         internal static readonly System.Random Rng = new System.Random();
 
+        /// <summary>
+        /// Composite key for graded card deduplication.
+        /// Avoids per-card string allocation during scanning.
+        /// </summary>
+        private struct GradedCardKey : IEquatable<GradedCardKey>
+        {
+            public ECardExpansionType Expansion;
+            public EMonsterType Monster;
+            public int Grade;
+
+            public GradedCardKey(
+                ECardExpansionType expansion,
+                EMonsterType monster,
+                int grade)
+            {
+                Expansion = expansion;
+                Monster = monster;
+                Grade = grade;
+            }
+
+            public bool Equals(GradedCardKey other)
+            {
+                return Expansion == other.Expansion
+                    && Monster == other.Monster
+                    && Grade == other.Grade;
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is GradedCardKey other && Equals(other);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    int hash = 17;
+                    hash = hash * 31 + (int)Expansion;
+                    hash = hash * 31 + (int)Monster;
+                    hash = hash * 31 + Grade;
+                    return hash;
+                }
+            }
+        }
+
         /// <summary>Fisher-Yates in-place shuffle.</summary>
         internal static void ShuffleInPlace<T>(List<T> list)
         {
@@ -42,9 +87,9 @@ namespace SinglesSlinger
         }
 
         /// <summary>
-        /// Yielding coroutine that scans a single expansion for eligible ungraded cards.
-        /// Results are appended to the <paramref name="results"/> list.
-        /// Yields every <paramref name="batchSize"/> cards to avoid frame spikes.
+        /// Yielding coroutine that scans a single expansion for eligible
+        /// ungraded cards. Results are appended to <paramref name="results"/>.
+        /// Yields every <paramref name="batchSize"/> cards.
         /// </summary>
         internal static IEnumerator ScanExpansionYielding(
             ECardExpansionType expansionType,
@@ -60,12 +105,15 @@ namespace SinglesSlinger
             List<int> collected = null;
             try
             {
-                collected = CPlayerData.GetCardCollectedList(expansionType, findGhostDimensionCards);
+                collected = CPlayerData.GetCardCollectedList(
+                    expansionType, findGhostDimensionCards);
             }
             catch (Exception ex)
             {
-                Plugin.Log.LogError("[SinglesSlinger] GetCardCollectedList failed for " +
-                    expansionType + " (ghostDim=" + findGhostDimensionCards + ")\r\n" + ex);
+                Plugin.Log.LogError(
+                    "[SinglesSlinger] GetCardCollectedList failed for " +
+                    expansionType + " (ghostDim=" + findGhostDimensionCards +
+                    ")\r\n" + ex);
                 yield break;
             }
 
@@ -85,7 +133,8 @@ namespace SinglesSlinger
                     CardData cardData = CPlayerData.GetCardData(
                         i, expansionType, findGhostDimensionCards);
 
-                    if (cardData == null || cardData.monsterType == EMonsterType.None)
+                    if (cardData == null ||
+                        cardData.monsterType == EMonsterType.None)
                         continue;
 
                     float mp = CPlayerData.GetCardMarketPrice(cardData);
@@ -113,21 +162,19 @@ namespace SinglesSlinger
 
         /// <summary>
         /// Yielding coroutine that scans the graded card inventory.
-        /// Results are appended to <paramref name="results"/> and sorted most-expensive-first
-        /// after all entries have been scanned.
+        /// Results are appended to <paramref name="results"/> and sorted
+        /// most-expensive-first after all entries have been scanned.
+        /// Uses cached FieldInfo from <see cref="ShelfUtility.GetGradedListField"/>
+        /// and a zero-allocation struct key for deduplication.
         /// </summary>
         internal static IEnumerator ScanGradedCardsYielding(
             List<CardData> results, int batchSize)
         {
             int keepQty = Plugin.GradedKeepCardQty.Value;
 
-            FieldInfo listField = AccessTools.Field(typeof(CPlayerData), "m_GradedCardInventoryList");
+            FieldInfo listField = ShelfUtility.GetGradedListField();
             if (listField == null)
-            {
-                LogHelper.LogErrorThrottled("Graded.ListFieldMissing",
-                    "[SinglesSlinger] Could not find m_GradedCardInventoryList.");
                 yield break;
-            }
 
             object rawListObj = listField.GetValue(null);
             if (rawListObj == null)
@@ -141,7 +188,7 @@ namespace SinglesSlinger
                 yield break;
             }
 
-            var seenEligibleCopies = new Dictionary<string, int>();
+            var seenEligibleCopies = new Dictionary<GradedCardKey, int>();
             int scanned = 0;
 
             foreach (object compactObj in rawList)
@@ -160,17 +207,28 @@ namespace SinglesSlinger
                         continue;
 
                     CardData cd = CPlayerData.GetGradedCardData(compact);
-                    if (cd == null || cd.monsterType == EMonsterType.None || cd.cardGrade <= 0)
+                    if (cd == null ||
+                        cd.monsterType == EMonsterType.None ||
+                        cd.cardGrade <= 0)
                         continue;
 
-                    GradeDecoder.DecodeCardGrade(cd.cardGrade, out int actualGrade, out string gradingCompany);
+                    GradeDecoder.DecodeCardGrade(
+                        cd.cardGrade, out int actualGrade,
+                        out string gradingCompany);
                     if (actualGrade <= 0) continue;
 
-                    if (gradingCompany == "PSA" && !Plugin.GradedAllowPSA.Value) continue;
-                    if (gradingCompany == "Beckett" && !Plugin.GradedAllowBeckett.Value) continue;
-                    if (gradingCompany == "Cardinals" && !Plugin.GradedAllowCardinals.Value) continue;
+                    if (gradingCompany == "PSA" &&
+                        !Plugin.GradedAllowPSA.Value)
+                        continue;
+                    if (gradingCompany == "Beckett" &&
+                        !Plugin.GradedAllowBeckett.Value)
+                        continue;
+                    if (gradingCompany == "Cardinals" &&
+                        !Plugin.GradedAllowCardinals.Value)
+                        continue;
 
-                    if (!Plugin.EnabledExpansions.TryGetValue(cd.expansionType, out var enabled) ||
+                    if (!Plugin.EnabledExpansions.TryGetValue(
+                            cd.expansionType, out var enabled) ||
                         !enabled.Value)
                         continue;
 
@@ -179,7 +237,9 @@ namespace SinglesSlinger
                         mp >= Plugin.GradedSellOnlyLessThanMP.Value)
                         continue;
 
-                    string key = cd.expansionType + "|" + cd.monsterType + "|" + cd.cardGrade;
+                    var key = new GradedCardKey(
+                        cd.expansionType, cd.monsterType, cd.cardGrade);
+
                     if (!seenEligibleCopies.TryGetValue(key, out int seen))
                         seen = 0;
 
@@ -201,7 +261,8 @@ namespace SinglesSlinger
 
             // Sort most expensive first
             results.Sort((a, b) =>
-                CPlayerData.GetCardMarketPrice(b).CompareTo(CPlayerData.GetCardMarketPrice(a)));
+                CPlayerData.GetCardMarketPrice(b)
+                    .CompareTo(CPlayerData.GetCardMarketPrice(a)));
         }
 
         /// <summary>
@@ -234,7 +295,8 @@ namespace SinglesSlinger
                     index = 0;
 
                 CardData candidate = sortedDistinct[index];
-                if (candidate != null && candidate.monsterType != EMonsterType.None)
+                if (candidate != null &&
+                    candidate.monsterType != EMonsterType.None)
                 {
                     int owned = CPlayerData.GetCardAmount(candidate);
                     if (owned > keepQty)
